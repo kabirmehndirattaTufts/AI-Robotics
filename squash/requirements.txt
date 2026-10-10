@@ -1,0 +1,7 @@
+legoeducation
+opencv-contrib-python
+mediapipe
+numpy
+paho-mqtt
+scikit-learn
+matplotlib
