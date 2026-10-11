@@ -22,3 +22,8 @@ HIT_WINDOW_S = 0.2           # pose gate + swing + position must line up within 
 
 # --- Levels (ball base speed in m/s), chosen by AprilTag ID ------------------
 LEVEL_SPEEDS = {0: 1.0, 1: 1.6, 2: 2.2}
+
+HAPTIC_SPEED_MIN = 85     # soft hit (was 60)
+HAPTIC_SPEED_MAX = 100    # hard hit
+HAPTIC_CYCLES = 1         # one forward + one back
+HAPTIC_PULSE_S = 0.25     # seconds per direction, so the whole kick is 0.5 s

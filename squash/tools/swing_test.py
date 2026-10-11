@@ -5,6 +5,11 @@ Live swing counter. Uses SWING_THRESHOLD (and SWING_MAX) from config.py.
 
 Swing the motor. Each counted swing prints its power (0 = barely, 1 = hard).
 Press Ctrl+C to stop.
+
+    python tools/swing_test.py --haptics
+Also plays the motor wiggle on every counted swing. Watch for double counts:
+if the wiggle's own vibration is counted as a second swing, the cooldown
+needs to be longer.
 """
 import math
 import os
@@ -14,13 +19,15 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import config
+from haptics import Haptics
 from lelib import doubleMotor
 
 THRESHOLD = config.SWING_THRESHOLD
 SWING_MAX = getattr(config, "SWING_MAX", 11000)
 GRAVITY = 1000.0
-COLLECT_S = 0.3      # after the first reading over threshold, keep the biggest one for this long
+COLLECT_S = 0.15      # after the first reading over threshold, keep the biggest one for this long
 COOLDOWN_S = 0.6     # ignore new swings right after one is counted
+USE_HAPTICS = "--haptics" in sys.argv
 GYRO_DEADBAND = getattr(config, "STROKE_GYRO_DEADBAND", 200)  # |gyroY| below this = unsure
 
 
@@ -52,6 +59,20 @@ def main():
     print(f"Connected. Threshold {THRESHOLD}. Swing away (Ctrl+C to stop).")
     time.sleep(1.0)
 
+    haptics = None
+    cooldown = COOLDOWN_S
+    if USE_HAPTICS:
+        haptics = Haptics(
+            dm,
+            speed_min=getattr(config, "HAPTIC_SPEED_MIN", 25),
+            speed_max=getattr(config, "HAPTIC_SPEED_MAX", 60),
+            pulse_s=getattr(config, "HAPTIC_PULSE_S", 0.08),
+            cycles=getattr(config, "HAPTIC_CYCLES", 3),
+        )
+        # the wiggle shakes the motor, so don't listen for swings until it settles
+        cooldown = max(COOLDOWN_S, haptics.duration + 0.4)
+        print(f"Haptics on. Cooldown after each swing: {cooldown:.2f} s")
+
     count = 0
     collecting_since = None
     peak = 0.0
@@ -63,7 +84,7 @@ def main():
             value = acc_dev(imu)
             now = time.time()
             if collecting_since is None:
-                if value >= THRESHOLD and now - last_swing_time > COOLDOWN_S:
+                if value >= THRESHOLD and now - last_swing_time > cooldown:
                     collecting_since = now
                     peak = value
                     peak_gy = imu.gyroscopeY
@@ -78,6 +99,8 @@ def main():
                     stroke = stroke_from_gyro(peak_gy)
                     print(f"SWING {count:3d}   {stroke:9}   peak {peak:6.0f}   power {power(peak):.2f}  {bar}   (gyroY {peak_gy:5.0f})")
                     collecting_since = None
+                    if haptics is not None:
+                        haptics.hit(power(peak))
             time.sleep(0.01)
     except KeyboardInterrupt:
         pass
