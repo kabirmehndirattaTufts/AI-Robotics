@@ -125,7 +125,7 @@ def open_camera(index=None, width=1280, height=720):
     if index is None:
         found = []
         for i in range(5):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
             if cap is not None and cap.isOpened():
                 ok, _ = cap.read()
                 if ok:
@@ -142,9 +142,12 @@ def open_camera(index=None, width=1280, height=720):
                 if choice.isdigit() and int(choice) in found:
                     index = int(choice)
                     break
-    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open camera {index}")
+    # MJPG first: many webcams only reach 30 fps at 720p in MJPG
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, 30)
     return cap

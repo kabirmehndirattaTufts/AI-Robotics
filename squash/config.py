@@ -35,3 +35,8 @@ TAG_SPACING_M = 0.30     # rough guess; it refines itself when both tags are see
 TAG_HOLD_S = 0.3
 DISTANCE_SCALE = 1.0     # intentionally uncorrected: court meters are about 1.83x real meters
                          # (measured: 1.5 m real read 2.75, 1.0 m real read 1.83)
+SWING_HAND = "right"       # the hand holding the Double Motor
+POSE_SWAP_LR = False       # flip to True if the ring lands on the wrong wrist
+GATE_OPEN_AT = 0.30        # wrist this far up from hip toward shoulder opens the gate
+GATE_CLOSE_AT = 0.20
+GATE_REMEMBER_S = 0.6      # swings are detected late, so the gate is "armed" this long after
