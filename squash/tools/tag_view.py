@@ -83,8 +83,13 @@ def main():
         spacing_m=getattr(config, "TAG_SPACING_M", 0.30),
         hold_s=getattr(config, "TAG_HOLD_S", 0.3),
         distance_scale=getattr(config, "DISTANCE_SCALE", 1.0),
+        detect_width=getattr(config, "TAG_DETECT_WIDTH", 960),
+        smooth_tau=getattr(config, "TAG_SMOOTH_TAU_S", 0.0),
+        blur_tolerant=getattr(config, "TAG_BLUR_TOLERANT", False),
     )
-    cap = open_camera(getattr(config, "CAMERA_INDEX", None))
+    cap = open_camera(getattr(config, "CAMERA_INDEX", None),
+                      backend=getattr(config, "CAMERA_BACKEND", "MSMF"),
+                      mjpg=getattr(config, "CAMERA_MJPG", True))
     ok, frame = cap.read()
     print(f"Camera frame size: {frame.shape[1]} x {frame.shape[0]}   (1280 x 720 recommended)")
     print("Press q in a window to quit.")

@@ -37,12 +37,14 @@ class ArmGate:
     """Pure math: shoulder/hip/wrist points in, lift and an open/closed gate out."""
 
     def __init__(self, open_at=0.30, close_at=0.20, smooth=0.5,
-                 min_visibility=0.5, remember_s=0.6):
+                 min_visibility=0.5, remember_s=0.6, torso_per_shoulder=1.3):
         self.open_at = open_at
         self.close_at = close_at
         self.smooth = smooth
         self.min_visibility = min_visibility
         self.remember_s = remember_s
+        self.torso_per_shoulder = torso_per_shoulder
+        self.reason = "no pose"
         self.lift = None
         self.open = False
         self.last_open = -1e9
@@ -50,17 +52,28 @@ class ArmGate:
     def _ok(self, p):
         return p is not None and getattr(p, "visibility", 1.0) >= self.min_visibility
 
-    def update(self, shoulder, hip, wrist, now):
-        if not (self._ok(shoulder) and self._ok(hip) and self._ok(wrist)):
-            self.lift = None
-            self.open = False
-            return None
-        torso = hip.y - shoulder.y            # image y grows downward
-        if torso < 0.05:                      # body too small or upside down: don't trust it
-            self.lift = None
-            self.open = False
-            return None
-        raw = (hip.y - wrist.y) / torso
+    def update(self, shoulder, hip, wrist, now, other_shoulder=None):
+        """
+        Torso length comes from the hip when it is visible. When it isn't (you are close
+        to the camera and your hips are cut off), it is estimated from the width between
+        your two shoulders instead.
+        """
+        self.reason = "ok"
+        if not self._ok(shoulder):
+            return self._fail("shoulder not seen")
+        if not self._ok(wrist):
+            return self._fail("wrist not seen")
+        torso = None
+        if self._ok(hip) and hip.y - shoulder.y >= 0.05:
+            torso = hip.y - shoulder.y            # image y grows downward
+        elif self._ok(other_shoulder):
+            width = float(np.hypot(shoulder.x - other_shoulder.x, shoulder.y - other_shoulder.y))
+            if width >= 0.03:
+                torso = self.torso_per_shoulder * width
+                self.reason = "ok (hip estimated from shoulders)"
+        if torso is None:
+            return self._fail("hip and other shoulder not seen")
+        raw = 1.0 - (wrist.y - shoulder.y) / torso      # same as (hip_y - wrist_y) / torso
         self.lift = raw if self.lift is None else self.lift + self.smooth * (raw - self.lift)
         if not self.open and self.lift >= self.open_at:
             self.open = True
@@ -69,6 +82,12 @@ class ArmGate:
         if self.open:
             self.last_open = now
         return self.lift
+
+    def _fail(self, why):
+        self.reason = why
+        self.lift = None
+        self.open = False
+        return None
 
     def armed(self, now):
         """True if the gate is open now or was open within the last remember_s seconds."""
@@ -89,6 +108,7 @@ class PoseTracker:
         self.width = width
         self._last_ts = 0
         self.points = None       # (shoulder, hip, wrist) normalized (x, y) for drawing
+        self.body = None         # (center_x, shoulder_width) normalized 0..1, or None. Used to fill tag dropouts
 
         if landmarker is not None:
             self._landmarker = landmarker           # for tests
@@ -125,11 +145,17 @@ class PoseTracker:
         result = self._landmarker.detect_for_video(image, ts)
 
         self.points = None
+        self.body = None
         if result.pose_landmarks:
             lm = result.pose_landmarks[0]
             s, hp, wr = lm[self.idx["shoulder"]], lm[self.idx["hip"]], lm[self.idx["wrist"]]
-            self.gate.update(s, hp, wr, now)
+            other = lm[11 if self.idx["shoulder"] == 12 else 12]
+            self.gate.update(s, hp, wr, now, other_shoulder=other)
             self.points = ((s.x, s.y), (hp.x, hp.y), (wr.x, wr.y))
+            ls, rs = lm[11], lm[12]
+            if min(getattr(ls, "visibility", 1.0), getattr(rs, "visibility", 1.0)) >= 0.5:
+                self.body = ((ls.x + rs.x) / 2.0, abs(ls.x - rs.x))
         else:
             self.gate.update(None, None, None, now)
+            self.gate.reason = "no person found"
         return self.gate.lift, self.gate.open, self.gate.armed(now)

@@ -66,7 +66,9 @@ def main():
             left_id=getattr(config, "TAG_LEFT_ID", 0),
             right_id=getattr(config, "TAG_RIGHT_ID", 1),
         )
-    cap = open_camera(getattr(config, "CAMERA_INDEX", None))
+    cap = open_camera(getattr(config, "CAMERA_INDEX", None),
+                      backend=getattr(config, "CAMERA_BACKEND", "MSMF"),
+                      mjpg=getattr(config, "CAMERA_MJPG", True))
     print("Press q in the window to quit.")
 
     fps, last = 0.0, time.time()

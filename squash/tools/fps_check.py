@@ -46,7 +46,9 @@ def main():
     from pose import PoseTracker
     from vision import TagTracker, open_camera
 
-    cap = open_camera(getattr(config, "CAMERA_INDEX", None))
+    cap = open_camera(getattr(config, "CAMERA_INDEX", None),
+                      backend=getattr(config, "CAMERA_BACKEND", "MSMF"),
+                      mjpg=getattr(config, "CAMERA_MJPG", True))
     tags = TagTracker(tag_size_m=getattr(config, "TAG_SIZE_MM", 100) / 1000.0)
     pose = PoseTracker(hand=getattr(config, "SWING_HAND", "right"),
                        swap_lr=getattr(config, "POSE_SWAP_LR", False))

@@ -40,3 +40,5 @@ POSE_SWAP_LR = False       # flip to True if the ring lands on the wrong wrist
 GATE_OPEN_AT = 0.30        # wrist this far up from hip toward shoulder opens the gate
 GATE_CLOSE_AT = 0.20
 GATE_REMEMBER_S = 0.6      # swings are detected late, so the gate is "armed" this long after
+
+TAG_BLUR_TOLERANT = True
