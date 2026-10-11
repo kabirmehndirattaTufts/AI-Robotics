@@ -27,3 +27,11 @@ HAPTIC_SPEED_MIN = 85     # soft hit (was 60)
 HAPTIC_SPEED_MAX = 100    # hard hit
 HAPTIC_CYCLES = 1         # one forward + one back
 HAPTIC_PULSE_S = 0.25     # seconds per direction, so the whole kick is 0.5 s
+
+TAG_SIZE_MM = 100        # black square, measured
+TAG_LEFT_ID = 0          # worn on YOUR left
+TAG_RIGHT_ID = 1         # worn on YOUR right
+TAG_SPACING_M = 0.30     # rough guess; it refines itself when both tags are seen
+TAG_HOLD_S = 0.3
+DISTANCE_SCALE = 1.0     # intentionally uncorrected: court meters are about 1.83x real meters
+                         # (measured: 1.5 m real read 2.75, 1.0 m real read 1.83)
