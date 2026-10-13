@@ -34,18 +34,36 @@ SIDE = {
 
 
 class ArmGate:
-    """Pure math: shoulder/hip/wrist points in, lift and an open/closed gate out."""
+    """
+    Pure math: shoulder/hip/wrist points in, two measurements and an open/closed gate out.
+
+      lift  = how high the wrist is  (0 = hip level, 1 = shoulder level)         needs shoulder, hip, wrist
+      reach = how far the wrist is to the SIDE of your chest center, in shoulder widths
+              (0.5 = wrist right at the edge of your torso, 1.0 = a full shoulder-width from your center line)
+              needs both shoulders and the wrist
+
+    mode "height":  open when lift is high      (default, the original rule)
+    mode "side":    open when the wrist is out beside your torso (reach)
+    mode "either":  open when either is true
+    """
 
     def __init__(self, open_at=0.30, close_at=0.20, smooth=0.5,
-                 min_visibility=0.5, remember_s=0.6, torso_per_shoulder=1.3):
+                 min_visibility=0.5, remember_s=0.6, torso_per_shoulder=1.3,
+                 mode="height", side_open_at=0.80, side_close_at=0.60):
         self.open_at = open_at
         self.close_at = close_at
         self.smooth = smooth
         self.min_visibility = min_visibility
         self.remember_s = remember_s
         self.torso_per_shoulder = torso_per_shoulder
+        self.mode = mode
+        self.side_open_at = side_open_at
+        self.side_close_at = side_close_at
         self.reason = "no pose"
         self.lift = None
+        self.reach = None
+        self.height_open = False
+        self.side_open = False
         self.open = False
         self.last_open = -1e9
 
@@ -63,29 +81,70 @@ class ArmGate:
             return self._fail("shoulder not seen")
         if not self._ok(wrist):
             return self._fail("wrist not seen")
+
+        # --- width between the shoulders (also used for the torso estimate) ---
+        width = None
+        if self._ok(other_shoulder):
+            w = float(np.hypot(shoulder.x - other_shoulder.x, shoulder.y - other_shoulder.y))
+            if w >= 0.03:
+                width = w
+
+        # --- lift ---
         torso = None
         if self._ok(hip) and hip.y - shoulder.y >= 0.05:
             torso = hip.y - shoulder.y            # image y grows downward
-        elif self._ok(other_shoulder):
-            width = float(np.hypot(shoulder.x - other_shoulder.x, shoulder.y - other_shoulder.y))
-            if width >= 0.03:
-                torso = self.torso_per_shoulder * width
-                self.reason = "ok (hip estimated from shoulders)"
-        if torso is None:
+        elif width is not None:
+            torso = self.torso_per_shoulder * width
+            self.reason = "ok (hip estimated from shoulders)"
+        if torso is not None:
+            raw = 1.0 - (wrist.y - shoulder.y) / torso      # same as (hip_y - wrist_y) / torso
+            self.lift = raw if self.lift is None else self.lift + self.smooth * (raw - self.lift)
+        else:
+            self.lift = None
+
+        # --- reach (wrist beside the torso) ---
+        if width is not None:
+            mid_x = (shoulder.x + other_shoulder.x) / 2.0
+            raw_r = abs(wrist.x - mid_x) / width
+            self.reach = raw_r if self.reach is None else self.reach + self.smooth * (raw_r - self.reach)
+        else:
+            self.reach = None
+
+        if self.lift is None and self.reach is None:
             return self._fail("hip and other shoulder not seen")
-        raw = 1.0 - (wrist.y - shoulder.y) / torso      # same as (hip_y - wrist_y) / torso
-        self.lift = raw if self.lift is None else self.lift + self.smooth * (raw - self.lift)
-        if not self.open and self.lift >= self.open_at:
-            self.open = True
-        elif self.open and self.lift <= self.close_at:
-            self.open = False
+
+        # --- two hysteresis gates ---
+        if self.lift is not None:
+            if not self.height_open and self.lift >= self.open_at:
+                self.height_open = True
+            elif self.height_open and self.lift <= self.close_at:
+                self.height_open = False
+        else:
+            self.height_open = False
+        if self.reach is not None:
+            if not self.side_open and self.reach >= self.side_open_at:
+                self.side_open = True
+            elif self.side_open and self.reach <= self.side_close_at:
+                self.side_open = False
+        else:
+            self.side_open = False
+
+        if self.mode == "side":
+            self.open = self.side_open
+        elif self.mode == "either":
+            self.open = self.height_open or self.side_open
+        else:
+            self.open = self.height_open
         if self.open:
             self.last_open = now
-        return self.lift
+        return self.lift if self.lift is not None else self.reach
 
     def _fail(self, why):
         self.reason = why
         self.lift = None
+        self.reach = None
+        self.height_open = False
+        self.side_open = False
         self.open = False
         return None
 
@@ -98,13 +157,17 @@ class PoseTracker:
     """MediaPipe PoseLandmarker + ArmGate."""
 
     def __init__(self, hand="right", swap_lr=False, gate=None, width=640,
-                 model_path=MODEL_PATH, landmarker=None):
+                 model_path=MODEL_PATH, landmarker=None, serve_gate=None):
         self.hand = hand
         side = hand
         if swap_lr:
             side = "left" if hand == "right" else "right"
         self.idx = SIDE[side]
         self.gate = gate or ArmGate()
+        self.serve_gate = serve_gate          # optional second ArmGate for the OTHER arm (the serve gesture)
+        other_side = "left" if side == "right" else "right"
+        self.serve_idx = SIDE[other_side]
+        self.serve_wrist = None               # normalized (x, y) of the serve wrist, for drawing
         self.width = width
         self._last_ts = 0
         self.points = None       # (shoulder, hip, wrist) normalized (x, y) for drawing
@@ -146,16 +209,24 @@ class PoseTracker:
 
         self.points = None
         self.body = None
+        self.serve_wrist = None
         if result.pose_landmarks:
             lm = result.pose_landmarks[0]
             s, hp, wr = lm[self.idx["shoulder"]], lm[self.idx["hip"]], lm[self.idx["wrist"]]
             other = lm[11 if self.idx["shoulder"] == 12 else 12]
             self.gate.update(s, hp, wr, now, other_shoulder=other)
             self.points = ((s.x, s.y), (hp.x, hp.y), (wr.x, wr.y))
+            if self.serve_gate is not None:
+                i2 = self.serve_idx
+                s2, hp2, wr2 = lm[i2["shoulder"]], lm[i2["hip"]], lm[i2["wrist"]]
+                self.serve_gate.update(s2, hp2, wr2, now, other_shoulder=lm[11 if i2["shoulder"] == 12 else 12])
+                self.serve_wrist = (wr2.x, wr2.y)
             ls, rs = lm[11], lm[12]
             if min(getattr(ls, "visibility", 1.0), getattr(rs, "visibility", 1.0)) >= 0.5:
                 self.body = ((ls.x + rs.x) / 2.0, abs(ls.x - rs.x))
         else:
+            if self.serve_gate is not None:
+                self.serve_gate.update(None, None, None, now)
             self.gate.update(None, None, None, now)
             self.gate.reason = "no person found"
         return self.gate.lift, self.gate.open, self.gate.armed(now)

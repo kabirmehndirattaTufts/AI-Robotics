@@ -30,18 +30,27 @@ POSE ASSIST (side-to-side only)
 import math
 import threading
 import time
+from collections import deque
 
 BODY_FRESH_S = 0.30     # pose reading must be newer than this to be trusted
 HANDOFF_S = 0.25        # fade time when the tags return
 
 
 class VisionThread:
-    def __init__(self, cap, tracker, pose, pose_assist=False, assist_max_s=1.5):
+    def __init__(self, cap, tracker, pose, pose_assist=False, assist_max_s=1.5, paddle=None):
         self.cap = cap
         self.tracker = tracker
         self.pose = pose
         self.pose_assist = pose_assist
         self.assist_max_s = assist_max_s
+        self.paddle = paddle           # PaddleColor or None (color mode off)
+        self._faces = deque(maxlen=120)  # (frame_time, 'orange'|'blue') for frames where the color was clear
+        self._serve_open = False
+        self._serve_lift = None
+        self._serve_wrist = None
+        self._last_face = None           # sticky: the last clear color, kept until a different one shows up
+        self._frame_t = 0.0
+        self.color_ms = 0.0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._threads = []
@@ -70,7 +79,8 @@ class VisionThread:
         self.pose_ms = 0.0
 
     def start(self):
-        for target in (self._camera_loop, self._pose_loop):
+        loops = [self._camera_loop, self._pose_loop] + ([self._color_loop] if self.paddle is not None else [])
+        for target in loops:
             t = threading.Thread(target=target, daemon=True)
             t.start()
             self._threads.append(t)
@@ -98,12 +108,24 @@ class VisionThread:
                 "armed": gate.armed(now),
                 "reason": gate.reason,
                 "error": self.error,
+                "face": self._last_face,
+                "serve_open": self._serve_open,
+                "serve_lift": self._serve_lift,
+                "serve_wrist": self._serve_wrist,
             }
         if self.pose_assist:
             pos, status = self._assist(now, pos, status, body, fix_t, fix_pos)
         out["position"] = pos
         out["tag_status"] = status
         return out
+
+    def face_before(self, t, max_age=None):
+        """The most recent clear paddle color seen at or before time t (and, if max_age is set, not older than that), else None."""
+        with self._lock:
+            for ft, face in reversed(self._faces):
+                if ft <= t:
+                    return face if (max_age is None or t - ft <= max_age) else None
+        return None
 
     # --- pose assist -------------------------------------------------------------------
     def _assist(self, now, pos, status, body, fix_t, fix_pos):
@@ -151,6 +173,7 @@ class VisionThread:
             with self._lock:
                 self._frame = frame
                 self._frame_id += 1
+                self._frame_t = now
                 self._position = position
                 self._raw = self.tracker.raw
                 self._tag_status = status
@@ -183,8 +206,35 @@ class VisionThread:
             ms = (time.perf_counter() - t0) * 1000
             with self._lock:
                 self._points = self.pose.points
+                sg = self.pose.serve_gate
+                self._serve_open = bool(sg.open) if sg is not None else False
+                self._serve_lift = sg.lift if sg is not None else None
+                self._serve_wrist = self.pose.serve_wrist
                 b = self.pose.body
                 self._body = (b[0], b[1], now) if b is not None else None
             self.pose_ms = 0.9 * self.pose_ms + 0.1 * ms
             self.pose_hz = 0.9 * self.pose_hz + 0.1 / max(now - last, 1e-3)
             last = now
+
+    # --- thread 3 (only with color mode) ------------------------------------------------
+    def _color_loop(self):
+        seen = -1
+        while not self._stop.is_set():
+            with self._lock:
+                frame, fid, ft = self._frame, self._frame_id, self._frame_t
+            if frame is None or fid == seen:
+                time.sleep(0.003)
+                continue
+            seen = fid
+            t0 = time.perf_counter()
+            try:
+                face, _ = self.paddle.classify_frame(frame)
+            except Exception as e:
+                self.error = f"color error: {e}"
+                return
+            ms = (time.perf_counter() - t0) * 1000
+            with self._lock:
+                if face is not None:
+                    self._last_face = face
+                    self._faces.append((ft, face))
+            self.color_ms = 0.9 * self.color_ms + 0.1 * ms
