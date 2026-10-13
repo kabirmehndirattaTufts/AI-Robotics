@@ -26,7 +26,7 @@ class TagTracker:
     def __init__(self, tag_size_m=0.10, left_id=0, right_id=1, spacing_m=0.30,
                  hold_s=0.3, smooth=0.4, distance_scale=1.0, detect_width=960,
                  adaptive_smooth=False, remember_offset=False, smooth_tau=0.0,
-                 blur_tolerant=False):
+                 blur_tolerant=False, true_spacing_m=0.0):
         """
         tag_size_m      side of the BLACK square in meters (100 mm = 0.10)
         spacing_m       starting guess for the distance between your two tags
@@ -37,13 +37,11 @@ class TagTracker:
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36H11)
         params = cv2.aruco.DetectorParameters()
         if blur_tolerant:
-            # defaults assume a sharp picture; these let smeared tags still decode (tested: ~9 px -> ~21 px of smear)
-            params.adaptiveThreshWinSizeMax = 53
-            params.polygonalApproxAccuracyRate = 0.05
+            # defaults assume a sharp picture. Measured on smeared test tags: lets tags survive roughly
+            # 9 px -> 13+ px of motion smear for about 1.4x the detection time (the cheapest settings that helped).
             params.maxErroneousBitsInBorderRate = 0.6
-            params.errorCorrectionRate = 0.9
-            params.perspectiveRemoveIgnoredMarginPerCell = 0.25
-            params.minOtsuStdDev = 3.0
+            params.adaptiveThreshWinSizeMax = 43
+            params.adaptiveThreshWinSizeStep = 20
         self.detector = cv2.aruco.ArucoDetector(dictionary, params)
         h = tag_size_m / 2.0
         # corner order OpenCV returns: top-left, top-right, bottom-right, bottom-left
@@ -59,6 +57,13 @@ class TagTracker:
         self.smooth_tau = smooth_tau             # seconds; >0 = smoothing by time instead of per frame
         self._last_update = None
         self.detect_width = detect_width   # find tags on a smaller copy of the frame (faster)
+        # real distance between the CENTERS of your two tags. If > 0, a single visible tag is enough to find the
+        # middle point between them: the other tag must sit true_spacing_m / tag_size tag-widths away along this tag's
+        # own horizontal edge, so the middle is found in the picture itself (no learned spacing, no depth noise).
+        self.true_spacing_m = true_spacing_m
+        self.tag_size_m = tag_size_m
+        self._zoff = {}                    # per tag: average depth minus this tag's depth, learned while both are visible
+        self._corners = {}
 
         self._off_l = None         # last center-minus-left-tag vector seen while both tags were visible
         self._off_r = None
@@ -82,6 +87,25 @@ class TagTracker:
         t = tvec.flatten()
         return np.array([float(t[0]), float(t[1]), float(t[2])]) * self.distance_scale
 
+    def _midpoint_from_one(self, tid, pose, K, direction):
+        """
+        One tag visible: find the point halfway between the two tags using the real spacing.
+        direction: -1 for the left tag (the other tag is toward image-left), +1 for the right tag.
+        Returns (camera_x, depth) or None when this method is off or the tag is not upright enough.
+        """
+        if self.true_spacing_m <= 0 or tid not in self._corners:
+            return None
+        c = self._corners[tid]                                   # TL, TR, BR, BL in pixels
+        xvec = ((c[1] - c[0]) + (c[2] - c[3])) / 2.0            # the tag's own horizontal edge, in pixels
+        if abs(xvec[0]) < 1.0 or abs(xvec[1]) > abs(xvec[0]):   # tag turned more than 45 degrees: do not trust
+            return None
+        center = c.mean(axis=0)
+        k = self.true_spacing_m / self.tag_size_m                # distance between centers in tag widths (about 2.03)
+        mid = center + direction * 0.5 * k * xvec                # halfway to the other tag, in pixels
+        z = pose[2] + self._zoff.get(tid, 0.0)                   # remembered depth bias between the two tags
+        x = (mid[0] - K[0, 2]) / K[0, 0] * z
+        return (float(x), float(z))
+
     def update(self, frame, now=None):
         """
         Process one BGR frame. Returns (position, status):
@@ -101,11 +125,14 @@ class TagTracker:
         if shrink != 1.0 and ids is not None:
             corners = [c / shrink for c in corners]            # back to full-frame pixels
         poses = {}
+        self._corners = {}
         self.detections = []
         if ids is not None:
             for c, i in zip(corners, ids.flatten()):
                 i = int(i)
                 self.detections.append((i, c.reshape(4, 2)))
+                if i in (self.left_id, self.right_id):
+                    self._corners[i] = c.reshape(4, 2).astype(np.float64)
                 if i in (self.left_id, self.right_id):
                     p = self._pose(c, K)
                     if p is not None:
@@ -122,17 +149,26 @@ class TagTracker:
             if 0.10 < sp < 0.80:                         # ignore nonsense readings
                 self.spacing = 0.9 * self.spacing + 0.1 * sp
             measured, status = (cam_x, z), "both"
+            for tid, p in ((self.left_id, tl), (self.right_id, tr)):
+                d = z - p[2]
+                self._zoff[tid] = d if tid not in self._zoff else self._zoff[tid] + 0.15 * (d - self._zoff[tid])
             self._off_l = (cam_x - tl[0], z - tl[2])           # remember where the center is relative to each tag
             self._off_r = (cam_x - tr[0], z - tr[2])
         elif tl is not None:
             # your left tag appears right of center in the image, so center is to its left (smaller x)
-            if self.remember_offset and self._off_l is not None:
+            mid = self._midpoint_from_one(self.left_id, tl, K, -1.0)
+            if mid is not None:
+                measured = mid
+            elif self.remember_offset and self._off_l is not None:
                 measured = (tl[0] + self._off_l[0], tl[2] + self._off_l[1])
             else:
                 measured = (tl[0] - self.spacing / 2.0, tl[2])
             status = "left"
         elif tr is not None:
-            if self.remember_offset and self._off_r is not None:
+            mid = self._midpoint_from_one(self.right_id, tr, K, +1.0)
+            if mid is not None:
+                measured = mid
+            elif self.remember_offset and self._off_r is not None:
                 measured = (tr[0] + self._off_r[0], tr[2] + self._off_r[1])
             else:
                 measured = (tr[0] + self.spacing / 2.0, tr[2])

@@ -10,7 +10,11 @@ CAMERA_BACKEND = "MSMF"      # "MSMF" gives 30 fps at 720p on this laptop; "DSHO
 CAMERA_MJPG = True           # ask the camera for compressed MJPG frames
 
 # --- MQTT -------------------------------------------------------------------
-MQTT_TOPIC = "ME193/Rogers/Kabir"   # check the exact topic name the instructor wants
+MQTT_ENABLED = True                 # post the score and show the MQTT window
+MQTT_BROKER = "test.mosquitto.org"
+MQTT_PORT = 1883
+MQTT_TOPIC = "ME193/Rogers/Kabir"   # the score (record streak, as a float) is posted here
+MQTT_HEARTBEAT_S = 2.0              # also re-send the score this often, even if it did not change
 
 # --- Court (meters, top-down) ----------------------------------------------
 COURT_WIDTH = 2.0
@@ -71,6 +75,7 @@ GATE_REMEMBER_S = 0.2        # swings are detected late, so the gate is "armed" 
 # --- Paddle color (orange / blue face) ----------------------------------------------
 COLOR_MODE = True           # True = ball is orange or blue, hit it with the matching paddle face
                              # (first run python tools/color_view.py to teach it your colors)
+COLOR_MAX_REPEAT = 3         # the ball is never the same color more than this many times in a row
 COLOR_MAX_AGE_S = None       # None = always use the last color seen before the swing; or a number of seconds to expire it
 
 # --- Serve gesture (the hand that is NOT swinging) ----------------------------------
@@ -80,7 +85,17 @@ SERVE_CLOSE_AT = 1.1
 SERVE_HOLD_S = 0.4           # hold it up this long
 SERVE_COOLDOWN_S = 1.0       # after a miss, wait this long before a new serve can start
 
- 
 # --- Window sizes (for screen recordings) ---------------------------------------------
 CAMERA_VIEW_SCALE = 0.75      # the --cam window: 0.5 = half size (640 x 360). The camera itself is unchanged.
 COURT_VIEW_SCALE = 1.0       # the court window: try 0.8 if it does not fit your screen height
+
+# --- Coach (speech bubble that explains why you missed) ---------------------------------
+COACH_ENABLED = True
+COACH_TAGS = {2: "nice", 3: "mean"}          # show this AprilTag id to the camera to pick that coach
+COACH_NAMES = {"nice": "Coach Ted Lasso", "mean": "Coach Sue Sylvester"}      # the name shown above the picture
+COACH_IMAGES = {"nice": "coaches/ted.jpg", "mean": "coaches/sue.jpg"}   # put your pictures here (relative to squash\)
+COACH_VIEW_SCALE = 0.8      # size of the coach card: 1.0 = full size (520 x 340), 0.6 = smaller
+COACH_KEYS = {"t": "nice", "s": "mean"}       # keys that pick a coach (same as showing the tag): t = Ted, s = Sue
+COACH_WINDOW_POS = None      # None = bottom right of the screen. Or (x, y) in pixels.
+
+TAG_TRUE_SPACING_M = 0.2032   # real distance between the centers of your two tags (8 inches)

@@ -35,7 +35,7 @@ class SquashGame:
                  serve_delay_s=0.0,
                  points_base=10.0, reaction_ref_s=1.0,
                  min_reaction_factor=0.5, max_reaction_factor=3.0,
-                 on_hit=None, on_miss=None, on_whiff=None, color_mode=False, on_wrong_face=None, rng=None):
+                 on_hit=None, on_miss=None, on_whiff=None, color_mode=False, on_wrong_face=None, color_max_repeat=3, rng=None):
         self.W = court_w
         self.D = court_d
         self.reach = reach
@@ -60,6 +60,10 @@ class SquashGame:
         self.color_mode = color_mode          # ball has a color; you must hit with that paddle face
         self.on_wrong_face = on_wrong_face    # on_wrong_face(needed, seen)  seen may be None
         self.ball_color = "orange"
+        self.color_max_repeat = color_max_repeat   # never the same color more than this many balls in a row
+        self._color_run = 0
+        self.events = []              # what went wrong during this approach (for the coach)
+        self.last_miss = None         # diagnosis of the latest miss, see diagnose()
         self.serving = False          # True while a served ball is still flying to the front wall (not hittable)
 
         self.state = "waiting"      # 'waiting' or 'playing'
@@ -100,7 +104,7 @@ class SquashGame:
         self.score = 0.0
         self._serve_at = now + self.serve_delay_s     # ball sits still until then
         self._front_t = self._serve_at                # (reset again at the front wall bounce)
-        self.ball_color = self.rng.choice(("orange", "blue"))
+        self._pick_color()
         # the serve: the ball starts in the back part of the court and flies to the FRONT wall first.
         # It can't be hit until it has bounced off the front wall, which gives you time before the first swing.
         self.ball = [self.rng.uniform(-0.35, 0.35) * self.W, self.rng.uniform(0.65, 0.9) * self.D]
@@ -110,6 +114,7 @@ class SquashGame:
         s = self.base_speed
         self.vel = [s * dx / norm, s * dz / norm]
         self.serving = True
+        self.events = []
         self._history.clear()
         self._last_t = now
 
@@ -150,12 +155,42 @@ class SquashGame:
 
         if self.ball[1] > self.D:                     # past the back line
             before = self.streak
+            self.last_miss = self.diagnose()
             self.streak = 0
             self.score = 0.0
             self.misses += 1
             self.state = "waiting"
             if self.on_miss:
                 self.on_miss(before)
+
+    # --- why did I miss? (used by the coach) ---------------------------------------------------
+    def _pick_color(self):
+        prev = self.ball_color
+        c = self.rng.choice(("orange", "blue"))
+        if c == prev and self._color_run >= self.color_max_repeat:
+            c = "blue" if prev == "orange" else "orange"
+        self._color_run = self._color_run + 1 if c == prev else 1
+        self.ball_color = c
+
+    def note_event(self, kind, **info):
+        self.events.append(dict(kind=kind, **info))
+
+    def diagnose(self):
+        """Pick the most useful reason for the miss from what happened while the ball was coming."""
+        ev = self.events
+        wf = [e for e in ev if e["kind"] == "wrong_face"]
+        if wf:
+            return {"kind": "wrong_face", "needed": wf[-1]["needed"], "seen": wf[-1]["seen"]}
+        if any(e["kind"] == "arm_down" for e in ev):
+            return {"kind": "arm_down"}
+        wh = [e for e in ev if e["kind"] == "whiff"]
+        if wh:
+            dx, dz = wh[-1]["dx"], wh[-1]["dz"]          # ball minus player, in court meters (+x = your right, +z = behind you)
+            if abs(dx) >= abs(dz):
+                return {"kind": "position", "dir": "right" if dx > 0 else "left",
+                        "dist": "far" if abs(dx) > 0.7 * self.reach + 0.3 else "a bit"}
+            return {"kind": "early" if dz < 0 else "late"}
+        return {"kind": "no_swing"}
 
     # --- the hit rule -----------------------------------------------------------
     def swing(self, power, now, face=None):
@@ -177,6 +212,9 @@ class SquashGame:
 
         # the ball must be coming toward the player, so it can't be hit twice in a row
         if best is None or self.vel[1] <= 0:
+            if self.vel[1] > 0 and self._history:
+                _t, bx0, bz0, px0, pz0 = min(self._history, key=lambda smp: abs(smp[0] - now))   # where things were at the swing
+                self.note_event("whiff", dx=bx0 - px0, dz=bz0 - pz0)
             if self.on_whiff:
                 self.on_whiff()
             return False
@@ -186,6 +224,7 @@ class SquashGame:
         # color rule: the paddle face seen just before the swing must match the ball. Wrong face = no hit,
         # the ball keeps coming (so you can still hit it with the right face if there is time).
         if self.color_mode and face != self.ball_color:
+            self.note_event("wrong_face", needed=self.ball_color, seen=face)
             if self.on_wrong_face:
                 self.on_wrong_face(self.ball_color, face)
             return False
@@ -209,7 +248,8 @@ class SquashGame:
         self.vel = [speed * math.sin(angle), -speed * math.cos(angle)]
 
         if self.color_mode:
-            self.ball_color = self.rng.choice(("orange", "blue"))   # next ball, new color
+            self._pick_color()                    # next ball, new color
+        self.events = []                      # a new approach starts
         self.streak += 1
         self.hits += 1
         self.best = max(self.best, self.streak)
